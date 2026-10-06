@@ -377,7 +377,8 @@ def evaluate(car, rules, threshold=0.10):
                 "（TBCC側の保証・整備条件は個別確認）")
 
     top = sorted(comps, key=lambda c: -c["w"])[:6]
-    res.update(verdict=verdict, confidence=conf, n=len(comps), eff_n=round(eff_n, 1), est=est,
+    reasons = price_reasons(car, comps, est, diff, cheaper_share, eff_n)
+    res.update(verdict=verdict, confidence=conf, n=len(comps), eff_n=round(eff_n, 1), est=est, reasons=reasons,
                median=pct(totals, 0.5), p25=pct(totals, 0.25), p75=pct(totals, 0.75),
                min=min(totals), max=max(totals), diff=diff, cheaper_share=cheaper_share,
                med_km=med_km, cond=cond,
@@ -386,6 +387,105 @@ def evaluate(car, rules, threshold=0.10):
                comps=[{k: c[k] for k in ("url", "model", "grade", "year", "km", "total", "adj", "shaken", "warranty", "mission", "area")}
                       for c in top])
     return res
+
+
+# ---------------------------------------------------------------- 価格差の見立て
+# side: "minus" = TBCC車の不利な点（安い理由になりうる）／"plus" = 有利な点（高い理由、または安ければ狙い目）
+#       "info" = 判定の確からしさに関わる注意
+FINISH_WORDS = [  # 比較車のタイトルに多いと「仕上げ・手間がかかった個体が多い」とみなす語
+    ("全塗装", r"全塗装|オールペン|全塗|再塗装"), ("レストア", r"レストア|リフレッシュ|フルリペア"),
+    ("リフトアップ・カスタム", r"リフトアップ|カスタム|コンプリート|ローダウン|社外"),
+    ("タイミングベルト等の交換済み", r"タイミングベルト|タイベル|ウォーターポンプ|ラジエーター|交換済"),
+    ("新品タイヤ・ホイール", r"新品(タイヤ|アルミ|ホイール|AT|MT)|新品.{0,4}タイヤ"),
+    ("ワンオーナー", r"ワンオーナー|1オーナー|ワンオーナ"), ("ディーラー車・正規輸入", r"ディーラー車|正規輸入|正規ディーラー"),
+]
+PREMIUM_WORDS = r"リミテッド|Limited|オートバイオグラフィー|ヴォーグ|HSE|サミット|オーバーランド|コンペティツィオーネ|エッセエッセ|TZ|TX ?リミテッド|特別仕様|アニバーサリー|Anniversary|SE\b|GLE|スーパーデラックス"
+
+
+def months_left(text):
+    m = re.match(r"(\d{4})\(.*?\)年(\d{1,2})月", text or "")
+    if not m:
+        return None
+    t = dt.date.today()
+    return (int(m.group(1)) - t.year) * 12 + int(m.group(2)) - t.month
+
+
+def price_reasons(car, comps, est, diff, cheaper_share, eff_n):
+    out = []
+
+    def add(side, text, weight):
+        out.append({"side": side, "text": text, "w": round(weight, 2)})
+
+    n = len(comps)
+    # 年式（相場は年式の近さで重み付けしているだけで補正はしていない）
+    years = sorted(c["year"] for c in comps if c["year"])
+    if years and car.get("year"):
+        my = years[len(years) // 2]
+        if car["year"] <= my - 2:
+            add("minus", f"比較車の中心は{my}年式で、この車（{car['year']}年）は{my - car['year']}年古い", 0.6 + 0.1 * (my - car["year"]))
+        elif car["year"] >= my + 2:
+            add("plus", f"比較車の中心は{my}年式で、この車（{car['year']}年）は{car['year'] - my}年新しい", 0.6 + 0.1 * (car["year"] - my))
+    # 走行距離（補正済みだが、比較車の範囲外なら推定が粗い）
+    kms = sorted(c["km"] for c in comps if c["km"])
+    if kms and car.get("km"):
+        if car["km"] > kms[int(len(kms) * 0.9)]:
+            add("minus", f"{car['km']/10000:.1f}万kmは比較車の9割より多い。距離は補正済みだが、ここまで走った車は少なく、実際の値下がりはさらに大きい可能性", 0.9)
+        elif car["km"] < kms[int(len(kms) * 0.1)]:
+            add("plus", f"{car['km']/10000:.1f}万kmは比較車の9割より少ない低走行", 0.9)
+    # 車検
+    sm = car.get("shaken_months")
+    others = [months_left(c["shaken"]) for c in comps]
+    with_date = [x for x in others if x is not None]
+    no_shaken = sum(1 for c in comps if re.search(r"なし|無", c["shaken"])) / n
+    if sm is not None:
+        med = sorted(with_date)[len(with_date) // 2] if with_date else 0
+        if sm >= 18 and (no_shaken >= 0.3 or sm - med >= 8):
+            add("plus", f"車検が約{sm}ヶ月残っている（比較車の{no_shaken:.0%}は車検なしで、取り直すと10万円前後かかる）", 0.8)
+        elif sm <= 6:
+            add("minus", f"車検残りが約{sm}ヶ月と短く、近いうちに車検費用がかかる", 0.6)
+    # 記録簿
+    if car.get("kirokubo") == "◎":
+        add("plus", "記録簿・整備履歴が「◎」で、整備の経緯を追える", 0.5)
+    elif car.get("kirokubo") in ("×", "無", "なし"):
+        add("minus", "記録簿・整備履歴が残っていない", 0.6)
+    # 保証・整備（TBCC側は記載なし）
+    w_share = sum(1 for c in comps if c["warranty"].startswith("保証付")) / n
+    m_share = sum(1 for c in comps if "法定整備付" in c["maint"]) / n
+    if w_share >= 0.5 or m_share >= 0.6:
+        add("minus", f"比較車の{w_share:.0%}が保証付き、{m_share:.0%}が法定整備付き。カーセンサーの価格にはその費用が入っていることが多く、TBCC側の保証・整備内容によっては差の一部はこれで説明できる", 0.7)
+    # 比較車の仕上げ・付加価値（タイトルの記載から）
+    for label, rx in FINISH_WORDS:
+        share = sum(1 for c in comps if re.search(rx, c["title"])) / n
+        if share >= 0.25 and n >= 4:
+            add("minus", f"比較車の{share:.0%}が「{label}」と記載。手を入れた個体が多い分、相場が高めに出ている可能性", 0.4 + share)
+    # 上位グレード
+    prem = sum(1 for c in comps if re.search(PREMIUM_WORDS, c["grade"])) / n
+    own = re.search(PREMIUM_WORDS, car.get("name", ""), flags=re.I)
+    if own:
+        add("plus", f"車名から上位グレード・特別仕様（{own.group(0)}）と分かる" +
+            (f"。比較車も{prem:.0%}が上位グレードなので、条件はそろっている" if prem >= 0.3 else ""), 0.6)
+    elif prem >= 0.3 and n >= 4:
+        add("minus", f"比較車の{prem:.0%}は上位グレード・特別仕様。この車のグレード次第で相場はもう少し下がる", 0.5 + prem / 2)
+    # 納車費用
+    if diff < 0:
+        add("plus", "TBCCの支払総額は一都三県の納車費用(11万円)込み。カーセンサーの価格は店頭渡しなので、実質はさらに約11万円お得", 0.5)
+    else:
+        add("minus", "TBCCの支払総額は一都三県の納車費用(11万円)込み。カーセンサーの価格は店頭渡しなので、実質の差は約11万円小さい", 0.7)
+    # 相場の中での位置
+    if cheaper_share is not None:
+        if cheaper_share == 0:
+            add("plus", f"比較した{n}台の中に、この車より安い車は1台もない", 0.8)
+        elif cheaper_share <= 0.1:
+            add("plus", f"比較した{n}台のうち、この車より安いのは{cheaper_share:.0%}だけ", 0.7)
+        elif cheaper_share >= 0.9:
+            add("minus", f"比較した{n}台のうち{cheaper_share:.0%}がこの車より安い", 0.7)
+    # 判定の確からしさ
+    if eff_n < 4:
+        add("info", f"近い条件の比較車が少なく（実質{eff_n:.0f}台）、相場の推定は粗め", 1)
+    if diff <= -0.25:
+        add("info", "相場との差が大きいので、修復歴・メーター交換・事故歴の有無はTBCCに確認しておきたい（比較車は修復歴なしのみ）", 0.8)
+    out.sort(key=lambda r: -r["w"])
+    return out
 
 
 # ---------------------------------------------------------------- output

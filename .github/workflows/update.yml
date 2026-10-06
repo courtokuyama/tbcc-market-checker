@@ -1,0 +1,61 @@
+name: 相場を更新
+
+on:
+  schedule:
+    - cron: "0 0 * * *" # 毎日 9:00（日本時間）
+  workflow_dispatch: # 「Run workflow」ボタンで今すぐ更新
+  push:
+    branches: [main]
+    paths: ["static/**", "models.json", "site_build.py", "tbcc_market.py", "app.py", ".github/workflows/update.yml"]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 定期実行と手動実行は取得から。コードの変更（push）はページの作り直しだけ
+      - name: 取得・判定・ページ作成
+        id: build
+        continue-on-error: true
+        env:
+          TZ: Asia/Tokyo
+        run: python site_build.py ${{ github.event_name == 'push' && '--no-fetch' || '' }}
+
+      - name: データを保存
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state
+          git diff --cached --quiet || git commit -m "相場データ更新 $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')"
+          git push
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
+      - name: 取得に失敗していたら知らせる
+        if: steps.build.outcome == 'failure'
+        run: |
+          echo "::error::相場の取得に失敗しました。ページは前回のデータのまま公開しています（ボードに失敗の表示あり）。ログを確認してください。"
+          exit 1

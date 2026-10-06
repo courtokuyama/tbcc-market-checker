@@ -33,6 +33,7 @@ const store = {
   set(k, v) { try { localStorage.setItem("tbcc." + k, JSON.stringify(v)); } catch { } },
 };
 async function api(path, opt = {}) {
+  if (window.TBCC_STATIC) return staticApi(path, opt.body);
   const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opt, body: opt.body ? JSON.stringify(opt.body) : undefined });
   const j = await r.json().catch(() => ({}));
   if (!r.ok && r.status !== 409) throw new Error(j.error || `HTTP ${r.status}`);
@@ -40,7 +41,57 @@ async function api(path, opt = {}) {
 }
 function toast(msg) {
   const t = $("#toast"); t.textContent = msg; t.hidden = false;
-  clearTimeout(toast._t); toast._t = setTimeout(() => t.hidden = true, 3200);
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.hidden = true, 4200);
+}
+
+// ------------------------------------------------------------ 静的サイト版（GitHub Pages）
+// window.TBCC_STATIC = {repo:"owner/name"} が定義されていれば、サーバーの代わりに data/*.json を読む。
+// 取得・判定は GitHub Actions が毎朝行い、data/ を更新する。
+const STATIC = window.TBCC_STATIC || null;
+const GH = STATIC ? `https://github.com/${STATIC.repo}` : "";
+const staticCache = {};
+async function getJSON(p) {
+  if (!staticCache[p]) staticCache[p] = fetch(`${p}?v=${STATIC.build || ""}`, { cache: "no-cache" }).then(r => { if (!r.ok) throw new Error(r.status === 404 ? "データが見つかりません" : `HTTP ${r.status}`); return r.json(); }).catch(e => { delete staticCache[p]; throw e; });
+  return JSON.parse(JSON.stringify(await staticCache[p]));
+}
+const staticTh = () => store.get("threshold", null) ?? STATIC.threshold ?? 0.10;
+const verdictOf = (m, th) => m.est == null || m.diff == null ? "比較不可" : m.diff <= -th ? "お手頃" : m.diff >= th ? "割高" : "相場並み";
+function ruleHits(rules, cars) {
+  return cars.map(c => {
+    const key = `${c.maker || ""} ${c.name}`;
+    const i = rules.findIndex(r => { try { return r.match && new RegExp(r.match, "i").test(key); } catch { return false; } });
+    return { slug: c.slug, name: key.trim(), rule: i < 0 ? null : i };
+  });
+}
+async function staticApi(path, body) {
+  const th = staticTh();
+  if (path === "/api/board") {
+    const b = await getJSON("data/board.json");
+    b.threshold = th;
+    b.cars.forEach(c => c.market.verdict = verdictOf(c.market, th));
+    return b;
+  }
+  if (path.startsWith("/api/cars/")) {
+    const c = await getJSON(`data/cars/${path.split("/").pop()}.json`);
+    c.market.verdict = verdictOf(c.market, th);
+    return c;
+  }
+  if (path === "/api/status") return { running: false };
+  if (path === "/api/settings") {
+    if (body && "threshold" in body) store.set("threshold", +body.threshold);
+    return { threshold: staticTh(), auto_refresh: true, auto_refresh_hour: 9 };
+  }
+  if (path === "/api/rules") {
+    const [rules, b] = await Promise.all([getJSON("data/rules.json"), getJSON("data/board.json")]);
+    const list = body?.rules || rules;
+    return { rules, preview: ruleHits(list, b.cars) };
+  }
+  if (path === "/api/refresh") {
+    window.open(`${GH}/actions/workflows/update.yml`, "_blank", "noopener");
+    toast("GitHubの画面で「Run workflow」を押すと、2〜3分で最新の相場に更新されます");
+    return { started: false, static: true };
+  }
+  throw new Error("not found");
 }
 
 // ------------------------------------------------------------ state
@@ -116,6 +167,23 @@ function gauge(d, th) {
 }
 
 // 記録開始時からある車は「新着」ではない。2回目以降の更新で初めて見つかった車だけ、7日間 NEW を付ける
+// 価格差の理由を判定ごとに並べ替える（minus=この車の不利な点、plus=有利な点、info=確認したいこと）
+function reasonGroups(m) {
+  const rs = m.reasons || [];
+  if (!rs.length) return null;
+  const pick = s => rs.filter(r => r.side === s);
+  const info = { title: "確認しておきたいこと", tone: "info", short: "要確認：", items: pick("info") };
+  if (m.verdict === "お手頃") return [
+    { title: "安い理由として考えられること", tone: "minus", short: "安さの理由？ ", items: pick("minus") },
+    { title: "それでもお得と言える点", tone: "plus", short: "", items: pick("plus") }, info];
+  if (m.verdict === "割高") return [
+    { title: "高い理由として考えられること", tone: "plus", short: "高さの理由？ ", items: pick("plus") },
+    { title: "気になる点", tone: "minus", short: "", items: pick("minus") }, info];
+  return [
+    { title: "プラス材料", tone: "plus", short: "プラス：", items: pick("plus") },
+    { title: "マイナス材料", tone: "minus", short: "", items: pick("minus") }, info];
+}
+
 function isNew(c) {
   const firstRun = S.board.cars.reduce((a, x) => x.first_seen && x.first_seen < a ? x.first_seen : a, "9999");
   return c.first_seen && c.first_seen > firstRun && (Date.now() - new Date(c.first_seen)) < 7 * 864e5;
@@ -134,6 +202,7 @@ function carCard(c) {
           <div class="val num"><span class="diff ${sign(m.diff)}">${pctS(m.diff)}</span>${m.est != null ? `（${c.total - m.est > 0 ? "+" : ""}${man(c.total - m.est)}万）` : ""}</div></div>
       </div>
       ${gauge(m.diff, S.board.threshold)}
+      ${(() => { const g = reasonGroups(m); const r = g?.[0].items[0]; return r ? `<p class="why"><b>${g[0].short}</b>${esc(r.text)}</p>` : ""; })()}
       <div class="chips"><span class="chip">${c.year ?? "—"}年</span><span class="chip">${kmS(c.km)}</span>
         <span class="chip">車検 ${c.shaken_months != null ? `残${c.shaken_months}ヶ月` : "—"}</span>
         <span class="chip">${esc(c.shift || "")}${c.cc ? ` ${c.cc.toLocaleString()}cc` : ""}</span>${c.kirokubo ? `<span class="chip">記録簿 ${esc(c.kirokubo)}</span>` : ""}</div>
@@ -190,7 +259,7 @@ async function renderBoard() {
   const cnt = Object.fromEntries(VERDICTS.map(x => [x, b.cars.filter(c => c.market.verdict === x).length]));
   v.innerHTML = `
     <div class="hero"><div><h1>出品中の車両と相場</h1><p>カーセンサー掲載の同車種・同世代と比較（走行距離補正済み）。カードを押すと根拠を確認できます。</p></div>
-      <a class="btn" href="/api/export.csv">${ICON.dl}<span>CSVで書き出し</span></a></div>
+      ${STATIC ? `<button class="btn" type="button" id="csvBtn">${ICON.dl}<span>CSVで書き出し</span></button>` : `<a class="btn" href="/api/export.csv">${ICON.dl}<span>CSVで書き出し</span></a>`}</div>
     ${b.last_error ? `<div class="alert" style="margin-bottom:16px"><b>直近の更新（${fmtDT(b.last_error.started)}）に失敗しました。</b>表示は${fmtDT(b.run.finished)}時点のデータです。<br>${esc(b.last_error.error || "")}</div>` : ""}
     ${kpis(b)}
     ${evStrip(b.events)}
@@ -209,6 +278,7 @@ async function renderBoard() {
     <div id="list"></div>
     <p class="foot">判定：相場より${Math.round(b.threshold * 100)}%以上安い＝お手頃／${Math.round(b.threshold * 100)}%以上高い＝割高（設定で変更可）。TBCCの支払総額は一都三県の納車費用(11万円)込み、カーセンサーは店頭納車前提。保証・内外装・改造の有無は比較に入らないため、最終判断は現車で。比較元データはカーセンサー.netの公開掲載情報（社内検討用）。</p>`;
   renderList();
+  $("#csvBtn") && ($("#csvBtn").onclick = exportCsvStatic);
   if (S.filter !== "all" && !cnt[S.filter]) { S.filter = "all"; }
   $("#q").addEventListener("input", e => { S.q = e.target.value; renderList(); });
   $("#filters").addEventListener("click", e => { const t = e.target.closest("button"); if (!t) return; S.filter = t.dataset.f; store.set("filter", S.filter); $("#filters").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === t)); renderList(); });
@@ -324,6 +394,10 @@ async function openCar(slug) {
         <div class="verdict-line v-${m.verdict}">${vtext}${m.cheaper_share != null ? ` 比較車のうち、この車より安いのは${Math.round(m.cheaper_share * 100)}%。` : ""}</div>
       </section>
 
+      ${(() => { const g = reasonGroups(m); if (!g) return ""; return `<section class="panel"><h3>価格差の見立て <span class="help" style="font-weight:400">比較データから自動で推定。最終確認はTBCCへ</span></h3>
+        <div class="reasons">${g.filter(x => x.items.length).map(x => `<div class="rgroup r-${x.tone}"><div class="rhead">${x.title}</div>
+          <ul>${x.items.map(r => `<li>${esc(r.text)}</li>`).join("")}</ul></div>`).join("")}</div></section>`; })()}
+
       <section class="panel chart"><h3>相場マップ（走行距離 × 支払総額）</h3>${scatter(c)}</section>
 
       <section class="panel"><h3>条件・コンディション</h3>
@@ -385,18 +459,25 @@ async function renderSettings() {
       <div class="row"><div><div class="k">「お手頃」「割高」の境目</div><div class="s">相場との差がこの割合を超えたら判定を付けます</div></div>
         <div style="display:flex;align-items:center;gap:12px"><input type="range" id="th" min="3" max="25" step="1" value="${Math.round(s.threshold * 100)}"><b class="num" id="thv" style="width:44px">±${Math.round(s.threshold * 100)}%</b></div></div>
     </section>
-    <section class="panel"><h3>自動更新</h3>
+    ${STATIC ? `<section class="panel"><h3>自動更新</h3>
+      <div class="row"><div><div class="k">毎日 9:00 に自動で相場を更新</div><div class="s">GitHub Actions が TBCC とカーセンサーを取得して、このページを作り直します（2〜3分）</div></div>
+        <span class="badge v-お手頃">オン</span></div>
+      <div class="row"><div><div class="k">今すぐ更新する</div><div class="s">GitHubの画面が開くので「Run workflow」を押してください</div></div>
+        <button class="btn" id="force">GitHubで更新を実行</button></div>
+      <div class="row"><div><div class="k">更新の履歴</div><div class="s">成功・失敗の記録とログ</div></div>
+        <a class="btn" href="${GH}/actions" target="_blank" rel="noopener">${ICON.ext}<span>実行履歴を見る</span></a></div>
+    </section>` : `<section class="panel"><h3>自動更新</h3>
       <div class="row"><div><div class="k">毎日自動で相場を更新</div><div class="s">このアプリが起動している間、指定時刻に1日1回取得します</div></div>
         <label class="switch"><input type="checkbox" id="auto" ${s.auto_refresh ? "checked" : ""}><span></span></label></div>
       <div class="row"><div><div class="k">更新する時刻</div></div>
         <select class="select" id="hour">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${h === s.auto_refresh_hour ? "selected" : ""}>${h}:00</option>`).join("")}</select></div>
       <div class="row"><div><div class="k">キャッシュを使わずに取り直す</div><div class="s">通常の更新は12時間以内の取得結果を再利用します。今すぐ最新にしたいときに</div></div>
         <button class="btn" id="force">今すぐ全部取り直す</button></div>
-    </section>
-    <section class="panel"><h3>車種ルール <span style="display:flex;gap:6px"><button class="btn" id="addRule">${ICON.plus}<span>行を追加</span></button><button class="btn primary" id="saveRules">保存</button></span></h3>
+    </section>`}
+    <section class="panel"><h3>車種ルール <span style="display:flex;gap:6px"><button class="btn" id="addRule">${ICON.plus}<span>行を追加</span></button><button class="btn primary" id="saveRules">${STATIC ? "GitHubで保存" : "保存"}</button></span></h3>
       <div id="unmatched"></div>
       <p class="help">TBCCの車名に<b>判定キー</b>（正規表現）が当たったら、その行のルールでカーセンサーを検索します（上の行が優先）。
-        <code>検索語</code>＝カーセンサーで検索する言葉、<code>年式</code>＝比較する世代の範囲（空欄なら<code>±年</code>で自動）、<code>車名</code>＝カーセンサー上の車名に一致させる正規表現、<code>除外グレード</code>＝世代違い・ボディ違いを外す正規表現。保存後、「相場を更新」で反映されます。</p>
+        <code>検索語</code>＝カーセンサーで検索する言葉、<code>年式</code>＝比較する世代の範囲（空欄なら<code>±年</code>で自動）、<code>車名</code>＝カーセンサー上の車名に一致させる正規表現、<code>除外グレード</code>＝世代違い・ボディ違いを外す正規表現。${STATIC ? "ここで編集すると「当たる出品車」をその場で確かめられます。「GitHubで保存」を押すとルールがコピーされ、GitHubの編集画面が開くので、全部貼り替えて「Commit changes」を押してください。次の更新から反映されます。" : "保存後、「相場を更新」で反映されます。"}</p>
       <div class="tablewrap" style="box-shadow:none"><table class="rules"><thead><tr><th>判定キー</th><th>検索語</th><th>年式 から</th><th>まで</th><th>±年</th><th>車名</th><th>除外グレード</th><th>当たる出品車</th><th></th></tr></thead><tbody id="rulesBody"></tbody></table></div>
     </section>
   </div>`;
@@ -417,18 +498,26 @@ async function renderSettings() {
   $("#rulesBody").addEventListener("input", e => { const tr = e.target.closest("tr"); rules[+tr.dataset.i][e.target.dataset.k] = e.target.value; dry(); });
   $("#rulesBody").addEventListener("click", e => { const b = e.target.closest("[data-del]"); if (!b) return; rules.splice(+b.dataset.del, 1); draw(); dry(); });
   $("#addRule").onclick = () => { rules.unshift({ match: "", kw: "" }); draw(); dry(); $("#rulesBody input").focus(); };
-  $("#saveRules").onclick = async () => { try { const res = await api("/api/rules", { method: "POST", body: { rules: clean() } }); preview(res.preview); toast("車種ルールを保存しました。「相場を更新」で反映されます"); } catch (e) { toast(e.message); } };
+  if (STATIC) $("#saveRules").onclick = async () => {
+    const text = JSON.stringify({ _説明: (await getJSON("data/rules_meta.json"))._説明, rules: clean() }, null, 2) + "\n";
+    let copied = false;
+    try { await navigator.clipboard.writeText(text); copied = true; } catch { }
+    window.open(`${GH}/edit/main/models.json`, "_blank", "noopener");
+    toast(copied ? "ルールをコピーしました。GitHubの画面で全部貼り替えて「Commit changes」を押してください" : "コピーできませんでした。GitHubの画面で直接編集してください");
+  };
+  else $("#saveRules").onclick = async () => { try { const res = await api("/api/rules", { method: "POST", body: { rules: clean() } }); preview(res.preview); toast("車種ルールを保存しました。「相場を更新」で反映されます"); } catch (e) { toast(e.message); } };
   const th = $("#th");
   th.oninput = () => $("#thv").textContent = `±${th.value}%`;
   th.onchange = async () => { await api("/api/settings", { method: "POST", body: { threshold: th.value / 100 } }); S.board = null; toast(`判定の境目を±${th.value}%にしました`); };
-  $("#auto").onchange = async e => { await api("/api/settings", { method: "POST", body: { auto_refresh: e.target.checked } }); toast(e.target.checked ? "自動更新をオンにしました" : "自動更新をオフにしました"); };
-  $("#hour").onchange = async e => { await api("/api/settings", { method: "POST", body: { auto_refresh_hour: +e.target.value } }); toast(`毎日${e.target.value}:00に更新します`); };
+  if (!STATIC) $("#auto").onchange = async e => { await api("/api/settings", { method: "POST", body: { auto_refresh: e.target.checked } }); toast(e.target.checked ? "自動更新をオンにしました" : "自動更新をオフにしました"); };
+  if (!STATIC) $("#hour").onchange = async e => { await api("/api/settings", { method: "POST", body: { auto_refresh_hour: +e.target.value } }); toast(`毎日${e.target.value}:00に更新します`); };
   $("#force").onclick = () => startRefresh(true);
 }
 
 // ------------------------------------------------------------ refresh
 async function startRefresh(force = false) {
   const r = await api("/api/refresh", { method: "POST", body: { force } });
+  if (r.static) return;
   if (!r.started) toast("すでに更新中です");
   poll();
 }
@@ -458,3 +547,19 @@ $("#refreshBtn").addEventListener("click", () => startRefresh(false));
 route();
 poll();
 if (!S.board) loadBoard().catch(() => { });
+
+// CSV（静的サイト版）：ブラウザ内で作って保存
+function exportCsvStatic() {
+  const b = S.board;
+  const cell = v => { const x = v == null ? "" : String(v); return /[",\n]/.test(x) ? `"${x.replace(/"/g, '""')}"` : x; };
+  const head = ["判定", "メーカー", "車名", "年式", "走行距離km", "車検", "記録簿", "シフト", "TBCC支払総額", "相場推定", "差額", "差率", "比較台数", "信頼度", "TBCC URL", "カーセンサー検索URL"];
+  const rows = visibleCars().map(c => { const m = c.market; return [m.verdict, c.maker, c.name, c.year, c.km, c.shaken, c.kirokubo, c.shift, c.total,
+    m.est != null ? Math.round(m.est) : "", m.est != null ? Math.round(c.total - m.est) : "", m.diff != null ? pctS(m.diff) : "", m.n, m.confidence, c.url, m.search_url]; });
+  const csv = "﻿" + [head, ...rows].map(r => r.map(cell).join(",")).join("\r\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  a.download = `tbcc_souba_${(b.run.finished || "").slice(0, 10).replace(/-/g, "")}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  toast(`表示中の${rows.length}台をCSVに書き出しました`);
+}

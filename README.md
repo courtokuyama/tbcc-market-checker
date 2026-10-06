@@ -3,7 +3,17 @@
 tokyo basic car club（https://buy.tokyobasiccarclub.co.jp/line-up/）の **出品中の全車両** を詳細ページまで読み、
 カーセンサー.net の同車種・同世代の掲載車と比べて「相場よりお手頃か」を判定・一覧できる社内向けWebアプリ。
 
-## 起動
+## 公開ページ（GitHub Pages）
+- URL: https://courtokuyama.github.io/tbcc-market-checker/ （検索エンジンには載せない設定。URLを知っていれば誰でも見られる）
+- **毎日9:00（日本時間）** に GitHub Actions（`.github/workflows/update.yml`）が `site_build.py` を実行し、取得・判定してページを作り直す
+- 今すぐ更新：ページ右上「相場を更新」→ GitHubの画面で **Run workflow**（2〜3分で反映）
+- データは `state/` にコミットして引き継ぐ（最新の全データ・価格と相場の推移・変化の記録）
+- 画面（`static/`）や `models.json` を main に push すると、取得せずにページだけ作り直す
+- 車種ルールは 設定 → 編集 →「GitHubで保存」（ルールがコピーされ、`models.json` の編集画面が開く）
+- 取得に失敗した日は前回のデータのままページを出し、ボードに失敗を表示。Actions の実行も失敗（赤）になる
+- 注意：公開リポジトリは60日間更新が無いと定期実行が止まる仕様。毎日データをコミットしているので通常は止まらないが、止まったら Actions 画面で再有効化する
+
+## 手元で起動（Mac）
 ```
 python3 app.py          # http://127.0.0.1:8765 がブラウザで開く
 ```
