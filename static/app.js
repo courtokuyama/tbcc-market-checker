@@ -187,6 +187,7 @@ async function renderBoard() {
   v.innerHTML = `
     <div class="hero"><div><h1>出品中の車両と相場</h1><p>カーセンサー掲載の同車種・同世代と比較（走行距離補正済み）。カードを押すと根拠を確認できます。</p></div>
       <a class="btn" href="/api/export.csv">${ICON.dl}<span>CSVで書き出し</span></a></div>
+    ${b.last_error ? `<div class="alert" style="margin-bottom:16px"><b>直近の更新（${fmtDT(b.last_error.started)}）に失敗しました。</b>表示は${fmtDT(b.run.finished)}時点のデータです。<br>${esc(b.last_error.error || "")}</div>` : ""}
     ${kpis(b)}
     ${evStrip(b.events)}
     <div class="toolbar">

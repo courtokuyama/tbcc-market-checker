@@ -29,21 +29,21 @@ OUT_DIR = os.path.join(HERE, "out")
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129 Safari/537.36"
 LINEUP_URL = "https://buy.tokyobasiccarclub.co.jp/line-up/"
 CS_SEARCH = "https://www.carsensor.net/usedcar/search.php"
-CACHE_TTL = 12 * 3600
+CACHE_TTL = 12 * 3600  # カーセンサー（相場はゆっくり動くので半日再利用）
+TBCC_TTL = 5 * 60  # TBCC（新着・値下げ・SOLDをすぐ拾うため毎回ほぼ最新を取る）
 REQUEST_GAP = 3.0
 MAX_PAGES = 4  # 1ページ30台 → 最大120台
-TODAY = dt.date.today()
 
 _last_request = 0.0
 _refresh = False
 
 
 # ---------------------------------------------------------------- fetch
-def fetch(url):
+def fetch(url, ttl=CACHE_TTL):
     global _last_request
     os.makedirs(CACHE_DIR, exist_ok=True)
     path = os.path.join(CACHE_DIR, hashlib.sha1(url.encode()).hexdigest() + ".html")
-    if not _refresh and os.path.exists(path) and time.time() - os.path.getmtime(path) < CACHE_TTL:
+    if not _refresh and os.path.exists(path) and time.time() - os.path.getmtime(path) < ttl:
         with open(path, encoding="utf-8", errors="ignore") as f:
             return f.read()
     wait = REQUEST_GAP - (time.time() - _last_request)
@@ -79,7 +79,7 @@ def to_int(s):
 
 # ---------------------------------------------------------------- TBCC
 def tbcc_lineup():
-    s = fetch(LINEUP_URL)
+    s = fetch(LINEUP_URL, TBCC_TTL)
     a, b = s.find("出品中の車両"), s.find("販売実績")
     seg = s[a:b if b > a else len(s)]
     cars = []
@@ -98,7 +98,7 @@ LABELS = ["車両本体価格", "支払総額", "走行距離", "年式", "車�
 
 
 def tbcc_detail(car):
-    s = fetch(car["url"])
+    s = fetch(car["url"], TBCC_TTL)
     L = text_lines(s)
     title = re.search(r"<title>(.*?)\s*\|", s)
     car["name"] = html.unescape(title.group(1)).strip() if title else car["slug"]
@@ -143,7 +143,8 @@ def tbcc_detail(car):
         imgs.append(u)
     car["images"] = imgs[:24]
     m = re.match(r"(\d{4})年(\d{1,2})月", car.get("shaken", ""))
-    car["shaken_months"] = ((int(m.group(1)) - TODAY.year) * 12 + int(m.group(2)) - TODAY.month) if m else None
+    today = dt.date.today()  # 常駐アプリで日付が古くならないよう毎回取る
+    car["shaken_months"] = ((int(m.group(1)) - today.year) * 12 + int(m.group(2)) - today.month) if m else None
     return car
 
 
@@ -273,7 +274,7 @@ def km_elasticity(comps, y):
 
 def evaluate(car, rules, threshold=0.10):
     rule = pick_rule(car, rules)
-    y = car.get("year") or TODAY.year
+    y = car.get("year") or dt.date.today().year
     if rule:
         kw = rule["kw"]
         win = rule.get("year_window")
@@ -429,9 +430,16 @@ def run(only=None, refresh=False, progress=None, threshold=0.10, rules=None):
     if only:
         cars = [c for c in cars if c["slug"] in set(only)]
     total = len(cars)
+    if not cars and not only:
+        raise RuntimeError("TBCCの一覧から車両を1台も読めませんでした（サイトの作りが変わった可能性。保存は見送りました）")
     for i, c in enumerate(cars):
         say(i, total, f"{c['slug']} の詳細を取得中")
         tbcc_detail(c)
+    broken = [c["slug"] for c in cars if not c.get("total") or not c.get("year")]
+    if cars and len(broken) > len(cars) / 2:
+        raise RuntimeError(f"TBCCの詳細ページから価格・年式を読めない車両が{len(broken)}/{len(cars)}台あります"
+                           "（サイトの作りが変わった可能性。保存は見送りました）")
+    for i, c in enumerate(cars):
         say(i, total, f"{c.get('maker')} {c['name']} の相場を検索中")
         try:
             c["market"] = evaluate(c, rules, threshold)

@@ -205,13 +205,15 @@ def api_board():
             "SELECT slug, MIN(r.started) AS first FROM snapshots s JOIN runs r ON r.id=s.run_id GROUP BY slug")}
         events = [dict(r) for r in con.execute("SELECT * FROM events ORDER BY id DESC LIMIT 30")]
         nruns = con.execute("SELECT COUNT(*) FROM runs WHERE status='done'").fetchone()[0]
+        last = con.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+        last_error = dict(last) if last and last["status"] == "error" else None
     for c in cars:
         c["first_seen"] = first_seen.get(c["slug"])
         # 一覧では重い配列を削る（詳細APIで返す）
         c["market"] = {k: v for k, v in c["market"].items() if k not in ("dist", "comps")}
         c["images"] = (c.get("images") or [])[:1]
     cars.sort(key=lambda c: (VERDICTS.index(c["market"]["verdict"]), c["market"].get("diff", 9)))
-    return {"run": dict(run), "cars": cars, "events": events, "runs": nruns, "threshold": th}
+    return {"run": dict(run), "cars": cars, "events": events, "runs": nruns, "threshold": th, "last_error": last_error}
 
 
 def api_car(slug):
