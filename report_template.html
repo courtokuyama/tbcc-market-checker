@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TBCC 相場チェック</title>
+<style>
+:root{
+  --bg:#f6f5f2;--card:#ffffff;--ink:#1d1d1b;--sub:#6b6a66;--line:#e3e1dc;
+  --good:#1f7a4d;--good-bg:#e3f3ea;--mid:#6b6a66;--mid-bg:#eeede9;--bad:#b4442c;--bad-bg:#f8e6e1;--na:#8a8780;
+  --band:#d9d6cf;--dot:#9b978e;--mark:#1d1d1b;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#151513;--card:#1e1e1c;--ink:#ecebe7;--sub:#a3a19b;--line:#33322f;
+  --good:#5cc98f;--good-bg:#1b3327;--mid:#b9b7b0;--mid-bg:#2a2a27;--bad:#f08a70;--bad-bg:#3a221c;--na:#8a8780;
+  --band:#3b3a36;--dot:#7d7a72;--mark:#ecebe7;}}
+:root[data-theme="dark"]{
+  --bg:#151513;--card:#1e1e1c;--ink:#ecebe7;--sub:#a3a19b;--line:#33322f;
+  --good:#5cc98f;--good-bg:#1b3327;--mid:#b9b7b0;--mid-bg:#2a2a27;--bad:#f08a70;--bad-bg:#3a221c;--na:#8a8780;
+  --band:#3b3a36;--dot:#7d7a72;--mark:#ecebe7;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 -apple-system,"Hiragino Sans","Noto Sans JP",sans-serif}
+.wrap{max-width:1080px;margin:0 auto;padding:28px 16px 60px}
+h1{font-size:22px;margin:0 0 4px}
+.lead{color:var(--sub);font-size:13px;margin:0 0 20px}
+.summary{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.chip{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:6px 14px;cursor:pointer;font-size:14px;color:var(--ink)}
+.chip b{font-variant-numeric:tabular-nums}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;margin-bottom:14px;display:grid;grid-template-columns:180px 1fr;overflow:hidden}
+.card img{width:100%;height:100%;object-fit:cover;min-height:180px;background:var(--line)}
+.body{padding:16px 18px;min-width:0}
+.top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}
+.name{font-size:18px;font-weight:700;margin:0}
+.name a{color:inherit;text-decoration:none}
+.meta{color:var(--sub);font-size:13px}
+.badge{font-weight:700;border-radius:8px;padding:4px 12px;font-size:15px;white-space:nowrap}
+.v-お手頃{color:var(--good);background:var(--good-bg)}
+.v-相場並み{color:var(--mid);background:var(--mid-bg)}
+.v-割高{color:var(--bad);background:var(--bad-bg)}
+.v-比較不可{color:var(--na);background:var(--mid-bg)}
+.nums{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:12px 0 6px}
+.num .k{font-size:12px;color:var(--sub)}
+.num .v{font-size:17px;font-weight:700;font-variant-numeric:tabular-nums}
+.pos{color:var(--bad)}.neg{color:var(--good)}
+svg.strip{width:100%;height:46px;display:block}
+.cond{margin:8px 0 0;padding-left:18px;font-size:13.5px}
+.notes{font-size:12.5px;color:var(--sub);margin-top:6px}
+details{margin-top:8px;font-size:13px}
+summary{cursor:pointer;color:var(--sub)}
+table{border-collapse:collapse;width:100%;margin-top:6px;font-variant-numeric:tabular-nums}
+td,th{border-bottom:1px solid var(--line);padding:5px 6px;text-align:left;white-space:nowrap}
+th{color:var(--sub);font-weight:500;font-size:12px}
+.tbl{overflow-x:auto}
+a{color:inherit}
+.foot{color:var(--sub);font-size:12px;margin-top:28px;line-height:1.8}
+@media (max-width:640px){
+  .card{grid-template-columns:minmax(0,1fr)}
+  .card img{height:200px}
+  .nums{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>TBCC 出品中車両 相場チェック</h1>
+  <p class="lead" id="lead"></p>
+  <div class="summary" id="summary"></div>
+  <div id="list"></div>
+  <div class="foot">
+    判定の出し方：カーセンサーで同じ車種・同じ世代の年式範囲を検索し、修復歴ありを除いた個体を比較対象にしています。
+    各比較車の価格をTBCC車と同じ走行距離に補正したうえで（距離の効きは比較車から推定）、年式・走行距離が近い個体ほど重く数える加重中央値を相場とし、TBCCの支払総額がそれより10%以上安ければ「お手頃」、10%以上高ければ「割高」、その間は「相場並み」。
+    信頼度は実質的な比較台数（高=8台相当以上／中=4台以上／低=それ未満）。<br>
+    注意：TBCCの支払総額には一都三県の納車費用(11万円)が含まれ、カーセンサーの支払総額は店頭納車が前提です。保証・整備内容・内外装の状態・改造/カスタムの有無は比較に入っていないため、最終判断は各車の詳細ページと現車で確認してください。
+    比較元のデータはカーセンサー.net の公開掲載情報で、ここには統計値と少数の参照リンクのみを載せています（社内検討用）。
+  </div>
+</div>
+<script>
+const DATA = /*__DATA__*/null;
+const yen = v => v == null ? "—" : (v/10000).toLocaleString("ja-JP",{maximumFractionDigits:1}) + "万円";
+const km = v => v == null ? "—" : (v/10000).toLocaleString("ja-JP",{maximumFractionDigits:1}) + "万km";
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const ORDER = ["お手頃","相場並み","割高","比較不可"];
+let filter = null;
+
+document.getElementById("lead").textContent =
+  `取得日時 ${DATA.generated}／出品中 ${DATA.cars.length}台／比較元：カーセンサー.net`;
+
+function strip(c){
+  const m = c.market; if(!m.dist || !m.dist.length) return "";
+  const vals = m.dist.map(d=>d.total).concat([c.total]);
+  let lo = Math.min(...vals), hi = Math.max(...vals); const pad=(hi-lo)*0.06||100000; lo-=pad; hi+=pad;
+  const x = v => 8 + (v-lo)/(hi-lo)*984;
+  const dots = m.dist.map(d=>`<circle cx="${x(d.total).toFixed(1)}" cy="${(18+(d.w<.3?6:0)).toFixed(0)}" r="${(2+d.w*3).toFixed(1)}" fill="var(--dot)" fill-opacity="${(.35+d.w*.6).toFixed(2)}"/>`).join("");
+  return `<svg class="strip" viewBox="0 0 1000 46" preserveAspectRatio="none" role="img" aria-label="比較車の価格分布">
+    <rect x="${x(m.p25)}" y="8" width="${Math.max(2,x(m.p75)-x(m.p25))}" height="22" rx="4" fill="var(--band)"/>
+    <line x1="${x(m.est)}" x2="${x(m.est)}" y1="4" y2="34" stroke="var(--sub)" stroke-width="2" stroke-dasharray="4 3"/>
+    ${dots}
+    <line x1="${x(c.total)}" x2="${x(c.total)}" y1="2" y2="36" stroke="var(--mark)" stroke-width="3"/>
+    <text x="${Math.min(940,Math.max(4,x(c.total)-20))}" y="45" font-size="10" fill="var(--ink)">TBCC</text>
+  </svg>
+  <div class="meta" style="font-size:11.5px">点=比較車（大きく濃いほど年式・距離が近い）／帯=中央50%／破線=相場推定／黒線=TBCC</div>`;
+}
+
+function card(c){
+  const m = c.market, d = m.diff;
+  const diffTxt = d==null ? "—" : `<span class="${d>0?"pos":"neg"}">${d>0?"+":""}${(d*100).toFixed(1)}%</span>`;
+  const gap = m.est==null ? "—" : `<span class="${c.total-m.est>0?"pos":"neg"}">${c.total-m.est>0?"+":""}${yen(c.total-m.est)}</span>`;
+  const comps = (m.comps||[]).map(x=>`<tr><td><a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.model)} ${esc(x.grade).slice(0,28)}</a></td><td>${x.year}</td><td>${km(x.km)}</td><td>${yen(x.total)}</td><td>${esc(x.shaken)}</td><td>${esc(x.warranty)}</td><td>${esc(x.area)}</td></tr>`).join("");
+  return `<article class="card" data-v="${m.verdict}">
+    <a href="${esc(c.url)}" target="_blank" rel="noopener"><img src="${esc(c.image)}" alt="" loading="lazy"></a>
+    <div class="body">
+      <div class="top">
+        <div><p class="name"><a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.maker)} ${esc(c.name)}</a></p>
+          <div class="meta">${c.year??"—"}年／${km(c.km)}／車検 ${esc(c.shaken??"—")}／${esc(c.shift??"")} ${c.cc?c.cc.toLocaleString()+"cc":""} ${esc(c.fuel??"")}／記録簿 ${esc(c.kirokubo??"—")}／${esc(c.katashiki??"")}</div></div>
+        <span class="badge v-${m.verdict}">${m.verdict}${m.confidence?`<span style="font-weight:400;font-size:12px">・信頼度${m.confidence}</span>`:""}</span>
+      </div>
+      <div class="nums">
+        <div class="num"><div class="k">TBCC 支払総額</div><div class="v">${yen(c.total)}</div></div>
+        <div class="num"><div class="k">相場推定（距離補正後）</div><div class="v">${yen(m.est)}</div></div>
+        <div class="num"><div class="k">差額</div><div class="v">${gap}</div></div>
+        <div class="num"><div class="k">差率／比較台数</div><div class="v">${diffTxt} <span style="font-weight:400;font-size:13px">／${m.n??0}台</span></div></div>
+      </div>
+      ${strip(c)}
+      ${m.cheaper_share!=null?`<div class="meta">比較車の相場幅 ${yen(m.p25)}〜${yen(m.p75)}（中央値 ${yen(m.median)}）。TBCCより安い比較車は全体の${Math.round(m.cheaper_share*100)}%。</div>`:""}
+      <ul class="cond">${(m.cond||[]).map(x=>`<li>${esc(x)}</li>`).join("")}</ul>
+      ${(m.notes&&m.notes.length)?`<div class="notes">※ ${m.notes.map(esc).join("／")}${m.n_repaired_excluded?`／修復歴ありの${m.n_repaired_excluded}台は除外`:""}</div>`:(m.n_repaired_excluded?`<div class="notes">※ 修復歴ありの${m.n_repaired_excluded}台は除外</div>`:"")}
+      <details><summary>比較条件と、近い比較車 ${(m.comps||[]).length}台</summary>
+        <div class="meta">検索語「${esc(m.rule??c.name)}」・年式 ${m.ymin}〜${m.ymax}年（ヒット${m.hits}台中、同車種${m.n_model}台）・<a href="${esc(m.search_url)}" target="_blank" rel="noopener">カーセンサーで検索結果を開く</a></div>
+        <div class="tbl"><table><tr><th>車名・グレード</th><th>年式</th><th>走行</th><th>支払総額</th><th>車検</th><th>保証</th><th>地域</th></tr>${comps}</table></div>
+      </details>
+    </div>
+  </article>`;
+}
+
+function render(){
+  const cars = DATA.cars.filter(c=>!filter || c.market.verdict===filter);
+  document.getElementById("list").innerHTML = cars.map(card).join("");
+  const counts = Object.fromEntries(ORDER.map(k=>[k,DATA.cars.filter(c=>c.market.verdict===k).length]));
+  document.getElementById("summary").innerHTML =
+    `<button class="chip" aria-pressed="${filter===null}" data-f="">すべて <b>${DATA.cars.length}</b></button>` +
+    ORDER.filter(k=>counts[k]).map(k=>`<button class="chip" aria-pressed="${filter===k}" data-f="${k}">${k} <b>${counts[k]}</b></button>`).join("");
+  document.querySelectorAll(".chip").forEach(b=>b.onclick=()=>{filter=b.dataset.f||null;render();});
+}
+render();
+</script>
+</body>
+</html>

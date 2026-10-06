@@ -1,0 +1,24 @@
+{
+  "_説明": "TBCCの車名(メーカー+タイトル)に match(正規表現)が当たったら、そのルールでカーセンサーを検索する。上から順に最初に当たったものを使う。kw=検索語 / ymin,ymax=比較する年式範囲(世代) / model=カーセンサー上の車名(グレード前の部分)に対する正規表現 / grade_exclude=グレード欄に含まれたら除外する正規表現(任意。世代違い・ボディ違いの混入除け) / also=[{model, grade}] 車名とグレードの組み合わせで追加で比較対象に含めるもの(任意)。新しい車種が入荷したらここに1行足す。当たらない車は年式±3年・タイトルそのままで検索し『要ルール追加』と表示する。",
+  "rules": [
+    {"match": "GRAND\\s*CHEROKEE.*S-?Limited", "kw": "グランドチェロキー", "ymin": 2008, "ymax": 2012, "model": "^グランドチェロキー$"},
+    {"match": "GRAND\\s*CHEROKEE", "kw": "グランドチェロキー", "year_window": 2, "model": "^グランドチェロキー$"},
+    {"match": "CHEROKEE\\s*XJ|^Jeep\\s+CHEROKEE", "kw": "チェロキー", "ymin": 1993, "ymax": 2001, "model": "^チェロキー$"},
+    {"match": "Range\\s*Rover", "kw": "レンジローバー", "ymin": 1994, "ymax": 2002, "model": "^レンジローバー$"},
+    {"match": "DISCOVERY\\s*3", "kw": "ディスカバリー3", "ymin": 2004, "ymax": 2009, "model": "^ディスカバリー3$"},
+    {"match": "DISCOVERY\\s*4", "kw": "ディスカバリー4", "ymin": 2009, "ymax": 2017, "model": "^ディスカバリー4$"},
+    {"match": "78\\s*PRADO", "kw": "ランドクルーザープラド", "ymin": 1990, "ymax": 1996, "model": "^ランドクルーザープラド$", "grade_exclude": "\\b(TX|TZ|RX)\\b"},
+    {"match": "95\\s*PRADO", "kw": "ランドクルーザープラド", "ymin": 1996, "ymax": 2002, "model": "^ランドクルーザープラド$", "grade_exclude": "\\b(SX|EX|LX)"},
+    {"match": "120\\s*PRADO", "kw": "ランドクルーザープラド", "ymin": 2002, "ymax": 2009, "model": "^ランドクルーザープラド$"},
+    {"match": "Land\\s*Cruiser\\s*80|80\\s*LAND", "kw": "ランドクルーザー80", "ymin": 1989, "ymax": 1998, "model": "^ランドクルーザー80$"},
+    {"match": "240\\s*ESTATE|240\\s*エステート|240\\s*WAGON", "kw": "240", "ymin": 1985, "ymax": 1993, "model": "^240エステート$", "also": [{"model": "^240$", "grade": "エステート|ワゴン"}]},
+    {"match": "240\\s*セダン|240\\s*SEDAN", "kw": "240", "ymin": 1985, "ymax": 1993, "model": "^240$", "grade_exclude": "エステート|ワゴン"},
+    {"match": "940\\s*ESTATE|940\\s*エステート", "kw": "940", "ymin": 1990, "ymax": 1998, "model": "^940(エステート|ワゴン)$"},
+    {"match": "Crown\\s*Van", "kw": "クラウンバン", "ymin": 1987, "ymax": 1999, "model": "^クラウンバン$"},
+    {"match": "Crown\\s*Wagon|Crown\\s*Station", "kw": "クラウンステーションワゴン", "ymin": 1987, "ymax": 1999, "model": "^クラウン(ステーション)?ワゴン$"},
+    {"match": "ABARTH.*595C", "kw": "アバルト 595C", "year_window": 2, "model": "^595C$"},
+    {"match": "ABARTH.*595", "kw": "アバルト 595", "year_window": 2, "model": "^595$"},
+    {"match": "デリカ.*スターワゴン|DELICA.*STAR", "kw": "デリカスターワゴン", "ymin": 1986, "ymax": 1999, "model": "^デリカスターワゴン$"},
+    {"match": "HILUX\\s*SURF|ハイラックスサーフ", "kw": "ハイラックスサーフ", "year_window": 3, "model": "^ハイラックスサーフ$"}
+  ]
+}
