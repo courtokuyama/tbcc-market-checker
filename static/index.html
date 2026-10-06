@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TBCC 相場ボード</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%231d1d1b'/><path d='M7 20l6-6 4 4 8-8' stroke='%2378d6a3' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo" aria-hidden="true"><svg viewBox="0 0 32 32"><rect width="32" height="32" rx="8"/><path d="M7 20l6-6 4 4 8-8"/></svg></span>
+    <div><div class="brand-name">相場ボード</div><div class="brand-sub">tokyo basic car club</div></div>
+  </div>
+  <nav class="tabs" role="tablist">
+    <a href="#/" data-route="board">ボード</a>
+    <a href="#/changes" data-route="changes">変化<span class="dot" id="changesDot" hidden></span></a>
+    <a href="#/settings" data-route="settings">設定</a>
+  </nav>
+  <div class="refresh">
+    <span class="updated" id="updated">—</span>
+    <button class="btn primary" id="refreshBtn" type="button">
+      <svg viewBox="0 0 24 24" class="ic"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>
+      <span>相場を更新</span>
+    </button>
+  </div>
+  <div class="progress" id="progress" hidden><div class="bar" id="progressBar"></div></div>
+</header>
+
+<main id="view" class="container"></main>
+
+<div class="drawer-backdrop" id="backdrop" hidden></div>
+<aside class="drawer" id="drawer" aria-hidden="true" role="dialog" aria-label="車両詳細"></aside>
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

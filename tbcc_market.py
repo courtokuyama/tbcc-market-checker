@@ -130,10 +130,18 @@ def tbcc_detail(car):
             car["handle"] = nxt[0]
         elif l == "シフト":
             car["shift"] = nxt[0]
+        elif l == "定員":
+            car["seats"] = nxt[0]
         elif l == "排気量":
             car["cc"] = to_int(nxt[0])
         elif l == "燃料":
             car["fuel"] = nxt[0]
+    imgs = []
+    for u in re.findall(r'(https://buy\.tokyobasiccarclub\.co\.jp/wp-content/uploads/sites/3/\d{4}/\d{2}/[^"\s,]+?\.(?:jpe?g|png|webp))', s):
+        if re.search(r"-\d+x\d+\.|banner_|btn-|favicon|logo", u) or u in imgs:
+            continue
+        imgs.append(u)
+    car["images"] = imgs[:24]
     m = re.match(r"(\d{4})年(\d{1,2})月", car.get("shaken", ""))
     car["shaken_months"] = ((int(m.group(1)) - TODAY.year) * 12 + int(m.group(2)) - TODAY.month) if m else None
     return car
@@ -263,7 +271,7 @@ def km_elasticity(comps, y):
     return max(-0.6, min(0.0, e))
 
 
-def evaluate(car, rules):
+def evaluate(car, rules, threshold=0.10):
     rule = pick_rule(car, rules)
     y = car.get("year") or TODAY.year
     if rule:
@@ -340,9 +348,9 @@ def evaluate(car, rules):
     eff_n = sum(ws) ** 2 / sum(w * w for w in ws)
     diff = (car["total"] - est) / est
     cheaper_share = sum(1 for t in totals if t < car["total"]) / len(totals)
-    if diff <= -0.10:
+    if diff <= -threshold:
         verdict = "お手頃"
-    elif diff >= 0.10:
+    elif diff >= threshold:
         verdict = "割高"
     else:
         verdict = "相場並み"
@@ -406,28 +414,40 @@ def write_outputs(cars):
         f.write(tpl.replace("/*__DATA__*/null", payload.replace("</", "<\\/")))
 
 
-def main():
+VERDICT_ORDER = {"お手頃": 0, "相場並み": 1, "割高": 2, "比較不可": 3}
+
+
+def run(only=None, refresh=False, progress=None, threshold=0.10, rules=None):
+    """全工程を実行して車両リストを返す。progress(done, total, message) で進捗を通知する。"""
     global _refresh
+    _refresh = refresh
+    if rules is None:
+        rules = json.load(open(os.path.join(HERE, "models.json"), encoding="utf-8"))["rules"]
+    say = progress or (lambda d, t, msg: print(msg, file=sys.stderr))
+    say(0, 0, "TBCCの出品一覧を取得中")
+    cars = tbcc_lineup()
+    if only:
+        cars = [c for c in cars if c["slug"] in set(only)]
+    total = len(cars)
+    for i, c in enumerate(cars):
+        say(i, total, f"{c['slug']} の詳細を取得中")
+        tbcc_detail(c)
+        say(i, total, f"{c.get('maker')} {c['name']} の相場を検索中")
+        try:
+            c["market"] = evaluate(c, rules, threshold)
+        except Exception as e:  # noqa: BLE001  1台の失敗で全体を止めない
+            c["market"] = {"verdict": "比較不可", "notes": [f"取得エラー: {e}"], "comps": [], "search_url": ""}
+    say(total, total, "完了")
+    cars.sort(key=lambda c: (VERDICT_ORDER[c["market"]["verdict"]], c["market"].get("diff", 9)))
+    return cars
+
+
+def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--refresh", action="store_true", help="キャッシュを無視して取り直す")
     ap.add_argument("--only", help="slugをカンマ区切りで指定")
     a = ap.parse_args()
-    _refresh = a.refresh
-    rules = json.load(open(os.path.join(HERE, "models.json"), encoding="utf-8"))["rules"]
-
-    cars = tbcc_lineup()
-    if a.only:
-        keep = set(a.only.split(","))
-        cars = [c for c in cars if c["slug"] in keep]
-    print(f"TBCC 出品中: {len(cars)}台", file=sys.stderr)
-    for c in cars:
-        tbcc_detail(c)
-        print(f"- {c.get('maker')} {c['name']} ({c.get('year')}年 {c.get('km')}km {c.get('total')}円) を相場検索…", file=sys.stderr)
-        c["market"] = evaluate(c, rules)
-        m = c["market"]
-        print(f"    → {m['verdict']}  比較{m.get('n')}台  相場{man(m.get('est'))}  差{m.get('diff', 0):+.1%}", file=sys.stderr)
-    order = {"お手頃": 0, "相場並み": 1, "割高": 2, "比較不可": 3}
-    cars.sort(key=lambda c: (order[c["market"]["verdict"]], c["market"].get("diff", 9)))
+    cars = run(a.only.split(",") if a.only else None, a.refresh)
     write_outputs(cars)
     print(f"出力: {os.path.join(OUT_DIR, 'report.html')}", file=sys.stderr)
 
