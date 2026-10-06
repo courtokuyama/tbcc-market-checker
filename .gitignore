@@ -3,3 +3,4 @@ out/
 __pycache__/
 .claude/
 data/
+demo_publish/

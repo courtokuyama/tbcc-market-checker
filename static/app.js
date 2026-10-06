@@ -115,7 +115,11 @@ function gauge(d, th) {
     <div class="mark ${sign(d)}" style="left:${x(d)}%"></div></div>`;
 }
 
-function isNew(c) { return c.first_seen && (Date.now() - new Date(c.first_seen)) < 7 * 864e5 && S.board.runs > 1; }
+// 記録開始時からある車は「新着」ではない。2回目以降の更新で初めて見つかった車だけ、7日間 NEW を付ける
+function isNew(c) {
+  const firstRun = S.board.cars.reduce((a, x) => x.first_seen && x.first_seen < a ? x.first_seen : a, "9999");
+  return c.first_seen && c.first_seen > firstRun && (Date.now() - new Date(c.first_seen)) < 7 * 864e5;
+}
 
 function carCard(c) {
   const m = c.market;
