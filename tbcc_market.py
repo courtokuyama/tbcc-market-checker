@@ -29,21 +29,21 @@ OUT_DIR = os.path.join(HERE, "out")
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129 Safari/537.36"
 LINEUP_URL = "https://buy.tokyobasiccarclub.co.jp/line-up/"
 CS_SEARCH = "https://www.carsensor.net/usedcar/search.php"
-CACHE_TTL = 12 * 3600
+CACHE_TTL = 12 * 3600  # カーセンサー（相場はゆっくり動くので半日再利用）
+TBCC_TTL = 5 * 60  # TBCC（新着・値下げ・SOLDをすぐ拾うため毎回ほぼ最新を取る）
 REQUEST_GAP = 3.0
 MAX_PAGES = 4  # 1ページ30台 → 最大120台
-TODAY = dt.date.today()
 
 _last_request = 0.0
 _refresh = False
 
 
 # ---------------------------------------------------------------- fetch
-def fetch(url):
+def fetch(url, ttl=CACHE_TTL):
     global _last_request
     os.makedirs(CACHE_DIR, exist_ok=True)
     path = os.path.join(CACHE_DIR, hashlib.sha1(url.encode()).hexdigest() + ".html")
-    if not _refresh and os.path.exists(path) and time.time() - os.path.getmtime(path) < CACHE_TTL:
+    if not _refresh and os.path.exists(path) and time.time() - os.path.getmtime(path) < ttl:
         with open(path, encoding="utf-8", errors="ignore") as f:
             return f.read()
     wait = REQUEST_GAP - (time.time() - _last_request)
@@ -79,7 +79,7 @@ def to_int(s):
 
 # ---------------------------------------------------------------- TBCC
 def tbcc_lineup():
-    s = fetch(LINEUP_URL)
+    s = fetch(LINEUP_URL, TBCC_TTL)
     a, b = s.find("出品中の車両"), s.find("販売実績")
     seg = s[a:b if b > a else len(s)]
     cars = []
@@ -98,7 +98,7 @@ LABELS = ["車両本体価格", "支払総額", "走行距離", "年式", "車�
 
 
 def tbcc_detail(car):
-    s = fetch(car["url"])
+    s = fetch(car["url"], TBCC_TTL)
     L = text_lines(s)
     title = re.search(r"<title>(.*?)\s*\|", s)
     car["name"] = html.unescape(title.group(1)).strip() if title else car["slug"]
@@ -130,12 +130,21 @@ def tbcc_detail(car):
             car["handle"] = nxt[0]
         elif l == "シフト":
             car["shift"] = nxt[0]
+        elif l == "定員":
+            car["seats"] = nxt[0]
         elif l == "排気量":
             car["cc"] = to_int(nxt[0])
         elif l == "燃料":
             car["fuel"] = nxt[0]
+    imgs = []
+    for u in re.findall(r'(https://buy\.tokyobasiccarclub\.co\.jp/wp-content/uploads/sites/3/\d{4}/\d{2}/[^"\s,]+?\.(?:jpe?g|png|webp))', s):
+        if re.search(r"-\d+x\d+\.|banner_|btn-|favicon|logo", u) or u in imgs:
+            continue
+        imgs.append(u)
+    car["images"] = imgs[:24]
     m = re.match(r"(\d{4})年(\d{1,2})月", car.get("shaken", ""))
-    car["shaken_months"] = ((int(m.group(1)) - TODAY.year) * 12 + int(m.group(2)) - TODAY.month) if m else None
+    today = dt.date.today()  # 常駐アプリで日付が古くならないよう毎回取る
+    car["shaken_months"] = ((int(m.group(1)) - today.year) * 12 + int(m.group(2)) - today.month) if m else None
     return car
 
 
@@ -263,9 +272,9 @@ def km_elasticity(comps, y):
     return max(-0.6, min(0.0, e))
 
 
-def evaluate(car, rules):
+def evaluate(car, rules, threshold=0.10):
     rule = pick_rule(car, rules)
-    y = car.get("year") or TODAY.year
+    y = car.get("year") or dt.date.today().year
     if rule:
         kw = rule["kw"]
         win = rule.get("year_window")
@@ -340,9 +349,9 @@ def evaluate(car, rules):
     eff_n = sum(ws) ** 2 / sum(w * w for w in ws)
     diff = (car["total"] - est) / est
     cheaper_share = sum(1 for t in totals if t < car["total"]) / len(totals)
-    if diff <= -0.10:
+    if diff <= -threshold:
         verdict = "お手頃"
-    elif diff >= 0.10:
+    elif diff >= threshold:
         verdict = "割高"
     else:
         verdict = "相場並み"
@@ -368,7 +377,8 @@ def evaluate(car, rules):
                 "（TBCC側の保証・整備条件は個別確認）")
 
     top = sorted(comps, key=lambda c: -c["w"])[:6]
-    res.update(verdict=verdict, confidence=conf, n=len(comps), eff_n=round(eff_n, 1), est=est,
+    reasons = price_reasons(car, comps, est, diff, cheaper_share, eff_n)
+    res.update(verdict=verdict, confidence=conf, n=len(comps), eff_n=round(eff_n, 1), est=est, reasons=reasons,
                median=pct(totals, 0.5), p25=pct(totals, 0.25), p75=pct(totals, 0.75),
                min=min(totals), max=max(totals), diff=diff, cheaper_share=cheaper_share,
                med_km=med_km, cond=cond,
@@ -377,6 +387,105 @@ def evaluate(car, rules):
                comps=[{k: c[k] for k in ("url", "model", "grade", "year", "km", "total", "adj", "shaken", "warranty", "mission", "area")}
                       for c in top])
     return res
+
+
+# ---------------------------------------------------------------- 価格差の見立て
+# side: "minus" = TBCC車の不利な点（安い理由になりうる）／"plus" = 有利な点（高い理由、または安ければ狙い目）
+#       "info" = 判定の確からしさに関わる注意
+FINISH_WORDS = [  # 比較車のタイトルに多いと「仕上げ・手間がかかった個体が多い」とみなす語
+    ("全塗装", r"全塗装|オールペン|全塗|再塗装"), ("レストア", r"レストア|リフレッシュ|フルリペア"),
+    ("リフトアップ・カスタム", r"リフトアップ|カスタム|コンプリート|ローダウン|社外"),
+    ("タイミングベルト等の交換済み", r"タイミングベルト|タイベル|ウォーターポンプ|ラジエーター|交換済"),
+    ("新品タイヤ・ホイール", r"新品(タイヤ|アルミ|ホイール|AT|MT)|新品.{0,4}タイヤ"),
+    ("ワンオーナー", r"ワンオーナー|1オーナー|ワンオーナ"), ("ディーラー車・正規輸入", r"ディーラー車|正規輸入|正規ディーラー"),
+]
+PREMIUM_WORDS = r"リミテッド|Limited|オートバイオグラフィー|ヴォーグ|HSE|サミット|オーバーランド|コンペティツィオーネ|エッセエッセ|TZ|TX ?リミテッド|特別仕様|アニバーサリー|Anniversary|SE\b|GLE|スーパーデラックス"
+
+
+def months_left(text):
+    m = re.match(r"(\d{4})\(.*?\)年(\d{1,2})月", text or "")
+    if not m:
+        return None
+    t = dt.date.today()
+    return (int(m.group(1)) - t.year) * 12 + int(m.group(2)) - t.month
+
+
+def price_reasons(car, comps, est, diff, cheaper_share, eff_n):
+    out = []
+
+    def add(side, text, weight):
+        out.append({"side": side, "text": text, "w": round(weight, 2)})
+
+    n = len(comps)
+    # 年式（相場は年式の近さで重み付けしているだけで補正はしていない）
+    years = sorted(c["year"] for c in comps if c["year"])
+    if years and car.get("year"):
+        my = years[len(years) // 2]
+        if car["year"] <= my - 2:
+            add("minus", f"比較車の中心は{my}年式で、この車（{car['year']}年）は{my - car['year']}年古い", 0.6 + 0.1 * (my - car["year"]))
+        elif car["year"] >= my + 2:
+            add("plus", f"比較車の中心は{my}年式で、この車（{car['year']}年）は{car['year'] - my}年新しい", 0.6 + 0.1 * (car["year"] - my))
+    # 走行距離（補正済みだが、比較車の範囲外なら推定が粗い）
+    kms = sorted(c["km"] for c in comps if c["km"])
+    if kms and car.get("km"):
+        if car["km"] > kms[int(len(kms) * 0.9)]:
+            add("minus", f"{car['km']/10000:.1f}万kmは比較車の9割より多い。距離は補正済みだが、ここまで走った車は少なく、実際の値下がりはさらに大きい可能性", 0.9)
+        elif car["km"] < kms[int(len(kms) * 0.1)]:
+            add("plus", f"{car['km']/10000:.1f}万kmは比較車の9割より少ない低走行", 0.9)
+    # 車検
+    sm = car.get("shaken_months")
+    others = [months_left(c["shaken"]) for c in comps]
+    with_date = [x for x in others if x is not None]
+    no_shaken = sum(1 for c in comps if re.search(r"なし|無", c["shaken"])) / n
+    if sm is not None:
+        med = sorted(with_date)[len(with_date) // 2] if with_date else 0
+        if sm >= 18 and (no_shaken >= 0.3 or sm - med >= 8):
+            add("plus", f"車検が約{sm}ヶ月残っている（比較車の{no_shaken:.0%}は車検なしで、取り直すと10万円前後かかる）", 0.8)
+        elif sm <= 6:
+            add("minus", f"車検残りが約{sm}ヶ月と短く、近いうちに車検費用がかかる", 0.6)
+    # 記録簿
+    if car.get("kirokubo") == "◎":
+        add("plus", "記録簿・整備履歴が「◎」で、整備の経緯を追える", 0.5)
+    elif car.get("kirokubo") in ("×", "無", "なし"):
+        add("minus", "記録簿・整備履歴が残っていない", 0.6)
+    # 保証・整備（TBCC側は記載なし）
+    w_share = sum(1 for c in comps if c["warranty"].startswith("保証付")) / n
+    m_share = sum(1 for c in comps if "法定整備付" in c["maint"]) / n
+    if w_share >= 0.5 or m_share >= 0.6:
+        add("minus", f"比較車の{w_share:.0%}が保証付き、{m_share:.0%}が法定整備付き。カーセンサーの価格にはその費用が入っていることが多く、TBCC側の保証・整備内容によっては差の一部はこれで説明できる", 0.7)
+    # 比較車の仕上げ・付加価値（タイトルの記載から）
+    for label, rx in FINISH_WORDS:
+        share = sum(1 for c in comps if re.search(rx, c["title"])) / n
+        if share >= 0.25 and n >= 4:
+            add("minus", f"比較車の{share:.0%}が「{label}」と記載。手を入れた個体が多い分、相場が高めに出ている可能性", 0.4 + share)
+    # 上位グレード
+    prem = sum(1 for c in comps if re.search(PREMIUM_WORDS, c["grade"])) / n
+    own = re.search(PREMIUM_WORDS, car.get("name", ""), flags=re.I)
+    if own:
+        add("plus", f"車名から上位グレード・特別仕様（{own.group(0)}）と分かる" +
+            (f"。比較車も{prem:.0%}が上位グレードなので、条件はそろっている" if prem >= 0.3 else ""), 0.6)
+    elif prem >= 0.3 and n >= 4:
+        add("minus", f"比較車の{prem:.0%}は上位グレード・特別仕様。この車のグレード次第で相場はもう少し下がる", 0.5 + prem / 2)
+    # 納車費用
+    if diff < 0:
+        add("plus", "TBCCの支払総額は一都三県の納車費用(11万円)込み。カーセンサーの価格は店頭渡しなので、実質はさらに約11万円お得", 0.5)
+    else:
+        add("minus", "TBCCの支払総額は一都三県の納車費用(11万円)込み。カーセンサーの価格は店頭渡しなので、実質の差は約11万円小さい", 0.7)
+    # 相場の中での位置
+    if cheaper_share is not None:
+        if cheaper_share == 0:
+            add("plus", f"比較した{n}台の中に、この車より安い車は1台もない", 0.8)
+        elif cheaper_share <= 0.1:
+            add("plus", f"比較した{n}台のうち、この車より安いのは{cheaper_share:.0%}だけ", 0.7)
+        elif cheaper_share >= 0.9:
+            add("minus", f"比較した{n}台のうち{cheaper_share:.0%}がこの車より安い", 0.7)
+    # 判定の確からしさ
+    if eff_n < 4:
+        add("info", f"近い条件の比較車が少なく（実質{eff_n:.0f}台）、相場の推定は粗め", 1)
+    if diff <= -0.25:
+        add("info", "相場との差が大きいので、修復歴・メーター交換・事故歴の有無はTBCCに確認しておきたい（比較車は修復歴なしのみ）", 0.8)
+    out.sort(key=lambda r: -r["w"])
+    return out
 
 
 # ---------------------------------------------------------------- output
@@ -406,28 +515,47 @@ def write_outputs(cars):
         f.write(tpl.replace("/*__DATA__*/null", payload.replace("</", "<\\/")))
 
 
-def main():
+VERDICT_ORDER = {"お手頃": 0, "相場並み": 1, "割高": 2, "比較不可": 3}
+
+
+def run(only=None, refresh=False, progress=None, threshold=0.10, rules=None):
+    """全工程を実行して車両リストを返す。progress(done, total, message) で進捗を通知する。"""
     global _refresh
+    _refresh = refresh
+    if rules is None:
+        rules = json.load(open(os.path.join(HERE, "models.json"), encoding="utf-8"))["rules"]
+    say = progress or (lambda d, t, msg: print(msg, file=sys.stderr))
+    say(0, 0, "TBCCの出品一覧を取得中")
+    cars = tbcc_lineup()
+    if only:
+        cars = [c for c in cars if c["slug"] in set(only)]
+    total = len(cars)
+    if not cars and not only:
+        raise RuntimeError("TBCCの一覧から車両を1台も読めませんでした（サイトの作りが変わった可能性。保存は見送りました）")
+    for i, c in enumerate(cars):
+        say(i, total, f"{c['slug']} の詳細を取得中")
+        tbcc_detail(c)
+    broken = [c["slug"] for c in cars if not c.get("total") or not c.get("year")]
+    if cars and len(broken) > len(cars) / 2:
+        raise RuntimeError(f"TBCCの詳細ページから価格・年式を読めない車両が{len(broken)}/{len(cars)}台あります"
+                           "（サイトの作りが変わった可能性。保存は見送りました）")
+    for i, c in enumerate(cars):
+        say(i, total, f"{c.get('maker')} {c['name']} の相場を検索中")
+        try:
+            c["market"] = evaluate(c, rules, threshold)
+        except Exception as e:  # noqa: BLE001  1台の失敗で全体を止めない
+            c["market"] = {"verdict": "比較不可", "notes": [f"取得エラー: {e}"], "comps": [], "search_url": ""}
+    say(total, total, "完了")
+    cars.sort(key=lambda c: (VERDICT_ORDER[c["market"]["verdict"]], c["market"].get("diff", 9)))
+    return cars
+
+
+def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--refresh", action="store_true", help="キャッシュを無視して取り直す")
     ap.add_argument("--only", help="slugをカンマ区切りで指定")
     a = ap.parse_args()
-    _refresh = a.refresh
-    rules = json.load(open(os.path.join(HERE, "models.json"), encoding="utf-8"))["rules"]
-
-    cars = tbcc_lineup()
-    if a.only:
-        keep = set(a.only.split(","))
-        cars = [c for c in cars if c["slug"] in keep]
-    print(f"TBCC 出品中: {len(cars)}台", file=sys.stderr)
-    for c in cars:
-        tbcc_detail(c)
-        print(f"- {c.get('maker')} {c['name']} ({c.get('year')}年 {c.get('km')}km {c.get('total')}円) を相場検索…", file=sys.stderr)
-        c["market"] = evaluate(c, rules)
-        m = c["market"]
-        print(f"    → {m['verdict']}  比較{m.get('n')}台  相場{man(m.get('est'))}  差{m.get('diff', 0):+.1%}", file=sys.stderr)
-    order = {"お手頃": 0, "相場並み": 1, "割高": 2, "比較不可": 3}
-    cars.sort(key=lambda c: (order[c["market"]["verdict"]], c["market"].get("diff", 9)))
+    cars = run(a.only.split(",") if a.only else None, a.refresh)
     write_outputs(cars)
     print(f"出力: {os.path.join(OUT_DIR, 'report.html')}", file=sys.stderr)
 
